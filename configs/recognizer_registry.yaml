@@ -1,0 +1,14 @@
+supported_languages:
+  - en
+  - nl
+
+global_regexes: []
+
+recognizers:
+  - name: "CustomEmailRecognizer"
+    supported_language: "en"
+    supported_entity: "EMAIL_ADDRESS"
+    patterns:
+      - name: "email_pattern"
+        regex: "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}"
+        score: 0.5
