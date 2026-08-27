@@ -1,0 +1,127 @@
+# spaCy NER via SpacyRecognizer, plus rule-based predefined recognizers.
+supported_languages:
+  - en
+  - nl
+
+default_score_threshold: 0.6
+
+nlp_configuration:
+  nlp_engine_name: spacy
+  models:
+    - lang_code: en
+      model_name: en_core_web_lg
+    - lang_code: nl
+      model_name: nl_core_news_lg
+  ner_model_configuration:
+    model_to_presidio_entity_mapping:
+      PER: PERSON
+      PERSON: PERSON
+      NORP: NRP
+      FAC: FACILITY
+      LOC: LOCATION
+      GPE: LOCATION
+      LOCATION: LOCATION
+      ORG: ORGANIZATION
+      ORGANIZATION: ORGANIZATION
+      DATE: DATE_TIME
+      TIME: DATE_TIME
+    low_confidence_score_multiplier: 0.4
+    low_score_entity_names:
+      - ORG
+      - ORGANIZATION
+
+recognizer_registry:
+  global_regex_flags: 26
+  recognizers:
+    - name: SpacyRecognizer
+      supported_languages:
+        - en
+        - nl
+      type: predefined
+      enabled: true
+    - name: CreditCardRecognizer
+      supported_languages:
+        - en
+        - nl
+      type: predefined
+    - name: CryptoRecognizer
+      supported_languages:
+        - en
+        - nl
+      type: predefined
+    - name: DateRecognizer
+      supported_languages:
+        - en
+        - nl
+      type: predefined
+    - name: EmailRecognizer
+      supported_languages:
+        - en
+        - nl
+      type: predefined
+    - name: IbanRecognizer
+      supported_languages:
+        - en
+        - nl
+      type: predefined
+    - name: IpRecognizer
+      supported_languages:
+        - en
+        - nl
+      type: predefined
+    - name: PhoneRecognizer
+      supported_languages:
+        - en
+        - nl
+      type: predefined
+    - name: UrlRecognizer
+      supported_languages:
+        - en
+        - nl
+      type: predefined
+    - name: MacAddressRecognizer
+      supported_languages:
+        - en
+        - nl
+      type: predefined
+    - name: UsSsnRecognizer
+      supported_languages:
+        - en
+      type: predefined
+    - name: UsBankRecognizer
+      supported_languages:
+        - en
+      type: predefined
+    - name: UsPassportRecognizer
+      supported_languages:
+        - en
+      type: predefined
+    - name: UsLicenseRecognizer
+      supported_languages:
+        - en
+      type: predefined
+    - name: MedicalLicenseRecognizer
+      supported_languages:
+        - en
+      type: predefined
+    - name: NhsRecognizer
+      supported_languages:
+        - en
+      type: predefined
+    - name: UsItinRecognizer
+      supported_languages:
+        - en
+      type: predefined
+    - name: LooseSsnRecognizer
+      type: custom
+      enabled: true
+      supported_entity: US_SSN
+      patterns:
+        - name: ssn_dashed
+          regex: "(\\b\\d{3}-\\d{2}-\\d{4}\\b)"
+          score: 0.6
+      supported_languages:
+        - language: en
+          context: [ssn, social, identification, identifier]
+        - language: nl
+          context: [ssn, identificatie, identifier, identificatienummer]

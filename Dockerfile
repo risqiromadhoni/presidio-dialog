@@ -4,7 +4,7 @@ USER root
 
 # Custom Presidio analyzer configuration.
 COPY configs/nlp_engine.yaml /app/nlp_engine.yaml
-COPY configs/recognizer_registry.yaml /app/recognizer_registry.yaml
+# COPY configs/recognizer_registry.yaml /app/recognizer_registry.yaml
 
 # Install Dutch spaCy model.
 #

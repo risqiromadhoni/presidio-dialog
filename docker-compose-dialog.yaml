@@ -1,0 +1,317 @@
+services:
+
+  # ============================================================
+  # Presidio Analyzer
+  # ============================================================
+  presidio-analyzer:
+    image: ghcr.io/data-privacy-stack/presidio-analyzer:latest
+
+    expose:
+      - "3000"
+
+    networks:
+      - dokploy-network
+
+    environment:
+      ANALYZER_CONF_FILE: /tmp/analyzer-config.yml
+
+    command:
+      - /bin/bash
+      - -c
+      - |
+        set -e
+
+        echo "=========================================="
+        echo "Installing Dutch spaCy model..."
+        echo "=========================================="
+
+        python -m spacy download nl_core_news_sm
+
+        echo "=========================================="
+        echo "Creating Presidio Analyzer configuration..."
+        echo "=========================================="
+
+        cat > /tmp/analyzer-config.yml <<'EOF'
+        supported_languages:
+          - en
+          - nl
+
+        default_score_threshold: 0.6
+
+        nlp_configuration:
+          nlp_engine_name: spacy
+
+          models:
+            - lang_code: en
+              model_name: en_core_web_lg
+
+            - lang_code: nl
+              model_name: nl_core_news_sm
+
+        recognizer_registry:
+          supported_languages:
+            - en
+            - nl
+
+          global_regex_flags: 26
+
+          recognizers:
+
+            - name: EmailRecognizer
+              supported_languages:
+                - en
+                - nl
+              supported_entity: EMAIL_ADDRESS
+              type: predefined
+              enabled: true
+
+            - name: PhoneRecognizer
+              supported_languages:
+                - en
+                - nl
+              supported_entity: PHONE_NUMBER
+              type: predefined
+              enabled: true
+
+            - name: IbanRecognizer
+              supported_languages:
+                - en
+                - nl
+              supported_entity: IBAN_CODE
+              type: predefined
+              enabled: true
+
+            - name: CreditCardRecognizer
+              supported_languages:
+                - en
+                - nl
+              supported_entity: CREDIT_CARD
+              type: predefined
+              enabled: true
+
+            - name: IpRecognizer
+              supported_languages:
+                - en
+                - nl
+              supported_entity: IP_ADDRESS
+              type: predefined
+              enabled: true
+
+            - name: UsSsnRecognizer
+              supported_languages:
+                - en
+              supported_entity: US_SSN
+              type: predefined
+              enabled: true
+
+        EOF
+
+        echo "=========================================="
+        echo "Presidio Analyzer configuration"
+        echo "=========================================="
+
+        cat /tmp/analyzer-config.yml
+
+        echo "=========================================="
+        echo "Starting Presidio Analyzer..."
+        echo "=========================================="
+
+        exec python app.py --host 0.0.0.0 --port 3000
+
+    restart: unless-stopped
+
+
+  # ============================================================
+  # Presidio Anonymizer
+  # ============================================================
+  presidio-anonymizer:
+    image: ghcr.io/data-privacy-stack/presidio-anonymizer:latest
+
+    expose:
+      - "3000"
+
+    networks:
+      - dokploy-network
+
+    restart: unless-stopped
+
+
+  # ============================================================
+  # Presidio Image Redactor
+  #
+  # OCR + Presidio Analyzer + Image Redaction
+  # ============================================================
+  presidio-image-redactor:
+    image: ghcr.io/data-privacy-stack/presidio-image-redactor:latest
+
+    expose:
+      - "3000"
+
+    networks:
+      - dokploy-network
+
+    restart: unless-stopped
+
+
+  # ============================================================
+  # Nginx Gateway
+  # ============================================================
+  presidio-proxy:
+    image: nginx:alpine
+
+    expose:
+      - "8080"
+
+    networks:
+      - dokploy-network
+
+    depends_on:
+      - presidio-analyzer
+      - presidio-anonymizer
+      - presidio-image-redactor
+
+    entrypoint:
+      - /bin/sh
+      - -c
+
+    command:
+      - |
+        set -e
+
+        cat > /etc/nginx/conf.d/default.conf <<'EOF'
+
+        # ======================================================
+        # Analyzer
+        #
+        # https://presidio-analyzer.getdialog.dev
+        # ======================================================
+
+        server {
+          listen 8080;
+          server_name presidio-analyzer.getdialog.dev;
+
+          client_max_body_size 100m;
+
+          proxy_connect_timeout 60s;
+          proxy_send_timeout 600s;
+          proxy_read_timeout 600s;
+
+          location / {
+            proxy_pass http://presidio-analyzer:3000;
+
+            proxy_http_version 1.1;
+
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+
+            proxy_set_header Connection "";
+          }
+        }
+
+
+        # ======================================================
+        # Anonymizer
+        #
+        # https://presidio-anonymizer.getdialog.dev
+        # ======================================================
+
+        server {
+          listen 8080;
+          server_name presidio-anonymizer.getdialog.dev;
+
+          client_max_body_size 100m;
+
+          proxy_connect_timeout 60s;
+          proxy_send_timeout 600s;
+          proxy_read_timeout 600s;
+
+          location / {
+            proxy_pass http://presidio-anonymizer:3000;
+
+            proxy_http_version 1.1;
+
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+
+            proxy_set_header Connection "";
+          }
+        }
+
+
+        # ======================================================
+        # Image Redactor
+        #
+        # https://presidio-image-redactor.getdialog.dev
+        # ======================================================
+
+        server {
+          listen 8080;
+          server_name presidio-image-redactor.getdialog.dev;
+
+          client_max_body_size 100m;
+
+          proxy_connect_timeout 60s;
+          proxy_send_timeout 600s;
+          proxy_read_timeout 600s;
+
+          location / {
+            proxy_pass http://presidio-image-redactor:3000;
+
+            proxy_http_version 1.1;
+
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+
+            proxy_set_header Connection "";
+          }
+        }
+
+
+        # ======================================================
+        # Default server
+        # ======================================================
+
+        server {
+          listen 8080 default_server;
+          server_name _;
+
+          location = /healthz {
+            add_header Content-Type text/plain;
+            return 200 'ok';
+          }
+
+          location / {
+            return 404;
+          }
+        }
+
+        EOF
+
+        echo "=========================================="
+        echo "Testing Nginx configuration..."
+        echo "=========================================="
+
+        nginx -t
+
+        echo "=========================================="
+        echo "Starting Nginx..."
+        echo "=========================================="
+
+        exec nginx -g 'daemon off;'
+
+    restart: unless-stopped
+
+
+# ==============================================================
+# Shared Dokploy Network
+# ==============================================================
+
+networks:
+  dokploy-network:
+    external: true
