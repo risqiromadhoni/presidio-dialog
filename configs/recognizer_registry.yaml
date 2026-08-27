@@ -172,6 +172,39 @@ recognizers:
       - language: en
         context: [postcode, postal, zip, address, street]
 
+  # A whole Dutch address as one span, so the anonymizer emits a single
+  # placeholder instead of one per component. Presidio never merges adjacent
+  # entities of different types, and the anonymizer resolves an overlap by
+  # keeping the containing span, so matching the full address in one go is the
+  # only way to turn "Damrak 1, 1012 LH Amsterdam" into one placeholder.
+  #
+  # nl_address_full anchors on the postcode: street name, house number,
+  # postcode, then an optional city and country. The postcode is what makes it
+  # safe to score at 0.85 and fire without context, since "Boeing 747" and
+  # "Chapter 12" share the street-plus-number shape but never carry one.
+  #
+  # nl_street is the fallback for an address written without a postcode. It
+  # requires a recognisable Dutch street ending (straat, laan, gracht and the
+  # rest) and scores 0.4, under the threshold, so it only surfaces next to a
+  # word like "adres" or "address". A street name with no such ending and no
+  # postcode, "Damrak 1" on its own, stays undetected on purpose.
+  - name: NlAddressRecognizer
+    type: custom
+    enabled: true
+    supported_entity: NL_ADDRESS
+    patterns:
+      - name: nl_address_full
+        regex: "\\b(?:'s-)?(?-i:[A-Z][a-zA-Z'\u2019-]+)(?:\\s+(?:(?:van|de|den|der|ter)\\s+)?(?:'s-)?(?-i:[A-Z][a-zA-Z'\u2019-]+)){0,2}\\s+(?:nr\\.?\\s*)?\\d{1,5}(?:\\s?[-/]\\s?\\d{1,5})?(?:\\s?(?:bis|hs|[a-zA-Z])\\b)?\\s*,?\\s*[1-9]\\d{3}\\s?(?-i:[A-Z]{2})(?:\\s*,?\\s*(?:'s-)?(?-i:[A-Z][a-zA-Z'\u2019-]+)(?:\\s+(?:(?:van|de|den|der|ter)\\s+)?(?:'s-)?(?-i:[A-Z][a-zA-Z'\u2019-]+)){0,2})?(?:\\s*,?\\s*(?:Nederland|Netherlands|Holland))?"
+        score: 0.85
+      - name: nl_street
+        regex: "\\b(?:(?:van|de|den|der|ter)\\s+)?(?-i:[A-Z])[a-zA-Z'\u2019-]*(?:straat|laan|weg|plein|gracht|kade|dijk|singel|hof|park|steeg|baan|dreef|pad|markt|wal|boulevard|erf|hoek|kwartier)\\s+(?:nr\\.?\\s*)?\\d{1,5}(?:\\s?[-/]\\s?\\d{1,5})?(?:\\s?(?:bis|hs|[a-zA-Z])\\b)?"
+        score: 0.4
+    supported_languages:
+      - language: nl
+        context: [adres, postadres, bezoekadres, woonachtig, woont, wonen, straat, huisnummer]
+      - language: en
+        context: [address, street, live, lives, living, residence, home]
+
   # --- US-specific ------------------------------------------------
   # Registered for English only. Dutch text runs without them, which is what
   # keeps US identifier patterns from firing on Dutch reference numbers.
