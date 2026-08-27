@@ -3,6 +3,7 @@ FROM ghcr.io/data-privacy-stack/presidio-analyzer:2.2.364
 USER root
 
 # Custom Presidio analyzer configuration.
+COPY configs/analyzer.yaml /app/analyzer.yaml
 COPY configs/nlp_engine.yaml /app/nlp_engine.yaml
 # COPY configs/recognizer_registry.yaml /app/recognizer_registry.yaml
 

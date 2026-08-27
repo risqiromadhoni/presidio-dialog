@@ -1,10 +1,32 @@
-# spaCy NER via SpacyRecognizer, plus rule-based predefined recognizers.
+# Presidio Analyzer, unified configuration (English + Dutch).
+#
+# This is the only config file the analyzer actually reads. It is passed as
+# ANALYZER_CONF_FILE in both docker-compose.yaml and docker-compose-prod.yaml,
+# and because it carries its own `nlp_configuration` and `recognizer_registry`
+# blocks it overrides NLP_CONF_FILE and RECOGNIZER_REGISTRY_CONF_FILE. The other
+# two files in configs/ are unused copies; see the header of each.
+#
+# Local edits apply on `docker compose restart presidio-analyzer` (the file is
+# bind-mounted). Production bakes it into the image, so changes need a rebuild.
+
+# Languages accepted in the `language` field of POST /analyze.
 supported_languages:
   - en
   - nl
 
+# Results below this score are dropped. Recognizers are tuned around it: a
+# pattern scored under 0.6 only surfaces once the context enhancer adds its
+# +0.35 bonus for a nearby context word.
 default_score_threshold: 0.6
 
+# ------------------------------------------------------------------
+# NLP engine
+#
+# Both models are baked into the image by the Dockerfile. They are the `lg`
+# (large) variants, not `sm`: the small Dutch model misses a noticeable share of
+# person names. Cost is memory, roughly 1.5 GB resident per gunicorn worker,
+# because gunicorn runs without --preload and each worker loads its own copy.
+# ------------------------------------------------------------------
 nlp_configuration:
   nlp_engine_name: spacy
   models:
@@ -12,7 +34,12 @@ nlp_configuration:
       model_name: en_core_web_lg
     - lang_code: nl
       model_name: nl_core_news_lg
+
   ner_model_configuration:
+    # spaCy NER label -> Presidio entity. Both models above emit the OntoNotes
+    # label set, so PER, LOCATION and ORGANIZATION never fire today. They are
+    # kept because transformer and stanza models use them, which makes swapping
+    # a model a one-line change here.
     model_to_presidio_entity_mapping:
       PER: PERSON
       PERSON: PERSON
@@ -25,20 +52,40 @@ nlp_configuration:
       ORGANIZATION: ORGANIZATION
       DATE: DATE_TIME
       TIME: DATE_TIME
+
+    # spaCy labels its organizations loosely, so ORG matches are multiplied down
+    # to 0.34 and fall under the 0.6 threshold unless something else corroborates
+    # them. Raise the multiplier if you would rather over-redact company names.
     low_confidence_score_multiplier: 0.4
     low_score_entity_names:
       - ORG
       - ORGANIZATION
 
+# ------------------------------------------------------------------
+# Recognizer registry
+# ------------------------------------------------------------------
 recognizer_registry:
+  # re.IGNORECASE | re.MULTILINE | re.DOTALL, applied to every pattern below.
+  # Patterns that need real case sensitivity have to scope it back off with
+  # (?-i:...), which NlPostcodeRecognizer does.
   global_regex_flags: 26
+
   recognizers:
+
+    # --- Model-driven ---------------------------------------------
+
+    # Wraps the spaCy models above. This is what finds PERSON, LOCATION,
+    # ORGANIZATION and DATE_TIME. Everything below it is regex or checksum work.
     - name: SpacyRecognizer
       supported_languages:
         - en
         - nl
       type: predefined
       enabled: true
+
+    # --- Locale-agnostic ------------------------------------------
+    # Formats that look the same in both languages.
+
     - name: CreditCardRecognizer
       supported_languages:
         - en
@@ -49,6 +96,9 @@ recognizer_registry:
         - en
         - nl
       type: predefined
+    # Matches separator-based dates such as 31-12-2024 and 12/31/2024. Dutch
+    # day-first ordering is already covered. Dates written out in words are
+    # caught by spaCy instead.
     - name: DateRecognizer
       supported_languages:
         - en
@@ -59,6 +109,8 @@ recognizer_registry:
         - en
         - nl
       type: predefined
+    # Validates the IBAN checksum, so Dutch NL.. accounts are handled without
+    # any extra configuration.
     - name: IbanRecognizer
       supported_languages:
         - en
@@ -69,11 +121,23 @@ recognizer_registry:
         - en
         - nl
       type: predefined
+    # Scores every match at a flat 0.4, which sits under the 0.6 threshold, so
+    # until the override below a phone number was only reported when a word like
+    # "phone" or "telefoon" happened to sit beside it. PHONE_NUMBER is admitted at
+    # 0.4 instead. NlPhoneRecognizer uses the same figure.
+    #
+    # Its region list (US, GB, DE, FR, IL, IN, CA, BR) contains no NL and cannot be
+    # changed from here: Presidio validates each recognizer entry against a pydantic
+    # model that discards unknown keys, so a supported_regions field is dropped
+    # without a warning. +31 numbers are still found, because an explicit country
+    # code needs no region hint. Dutch national formats are NlPhoneRecognizer's job.
     - name: PhoneRecognizer
       supported_languages:
         - en
         - nl
       type: predefined
+      score_thresholds:
+        PHONE_NUMBER: 0.4
     - name: UrlRecognizer
       supported_languages:
         - en
@@ -84,6 +148,80 @@ recognizer_registry:
         - en
         - nl
       type: predefined
+
+    # --- Dutch ----------------------------------------------------
+    # Presidio ships country packs for a dozen countries but not for the
+    # Netherlands, so the three below are defined here.
+
+    # Burgerservicenummer, the Dutch national identity number. Nine digits with
+    # no internal punctuation, which on its own is indistinguishable from an
+    # order number, so the pattern is scored at 0.55 and stays under the 0.6
+    # threshold until a context word lifts it to 0.90. The elfproef checksum
+    # that would confirm a real BSN cannot be expressed as a regex; the context
+    # requirement stands in for it.
+    #
+    # 0.55 rather than something lower because spaCy reads a bare digit run as a
+    # date and reports DATE_TIME at 0.85 over the same span. Any lower and the
+    # BSN still comes back from /analyze, but the anonymizer resolves the overlap
+    # in favour of the higher score and writes <DATE_TIME> in its place.
+    # Dutch national phone formats, which PhoneRecognizer cannot see without NL
+    # in its region list. Covers 0612345678, 06-1234 5678, 020 794 5000 and the
+    # +31 / 0031 / +31 (0) prefixes, with spaces, dots or hyphens between groups.
+    # The shape is a trunk 0 or a +31 prefix followed by exactly nine more digits,
+    # which is specific enough that a bare ten-digit number starting with 0 is the
+    # only realistic false positive. Scored to match PhoneRecognizer.
+    - name: NlPhoneRecognizer
+      type: custom
+      enabled: true
+      supported_entity: PHONE_NUMBER
+      score_thresholds:
+        PHONE_NUMBER: 0.4
+      patterns:
+        - name: nl_phone
+          regex: "(?<![\\w+])(?:(?:\\+|00)31[\\s.-]?(?:\\(0\\)[\\s.-]?)?|0)[1-9][\\s.-]?(?:\\d[\\s.-]?){7}\\d(?!\\d)"
+          score: 0.4
+      supported_languages:
+        - language: nl
+          context: [telefoon, telefoonnummer, mobiel, bellen, tel, gsm]
+        - language: en
+          context: [phone, telephone, mobile, cell, call, tel]
+
+    - name: NlBsnRecognizer
+      type: custom
+      enabled: true
+      supported_entity: NL_BSN
+      patterns:
+        - name: bsn_9digit
+          regex: "\\b\\d{9}\\b"
+          score: 0.55
+      supported_languages:
+        - language: nl
+          context: [bsn, burgerservicenummer, sofinummer, burgerservice]
+        - language: en
+          context: [bsn, citizen, burgerservicenummer, sofinummer]
+
+    # Dutch postcode, four digits then two letters, as in 1015 CJ. The first
+    # digit cannot be zero. (?-i:[A-Z]{2}) turns off the global IGNORECASE for
+    # the letter pair, which matters more than it looks: case-insensitively,
+    # "in 2015 in Amsterdam" matches the pattern via "2015 in".
+    - name: NlPostcodeRecognizer
+      type: custom
+      enabled: true
+      supported_entity: NL_POSTCODE
+      patterns:
+        - name: nl_postcode
+          regex: "\\b[1-9]\\d{3}\\s?(?-i:[A-Z]{2})\\b"
+          score: 0.6
+      supported_languages:
+        - language: nl
+          context: [postcode, adres, woonachtig, straat, wonen]
+        - language: en
+          context: [postcode, postal, zip, address, street]
+
+    # --- US-specific ----------------------------------------------
+    # Registered for English only. Dutch text runs without them, which is what
+    # keeps US identifier patterns from firing on Dutch reference numbers.
+
     - name: UsSsnRecognizer
       supported_languages:
         - en
@@ -112,6 +250,12 @@ recognizer_registry:
       supported_languages:
         - en
       type: predefined
+
+    # --- Custom ---------------------------------------------------
+
+    # The bundled UsSsnRecognizer requires supporting context and skips some
+    # formats. This one takes the dashed form on its own at 0.6, matching the
+    # threshold exactly, so a bare 123-45-6789 is still reported.
     - name: LooseSsnRecognizer
       type: custom
       enabled: true
@@ -125,3 +269,13 @@ recognizer_registry:
           context: [ssn, social, identification, identifier]
         - language: nl
           context: [ssn, identificatie, identifier, identificatienummer]
+
+# ------------------------------------------------------------------
+# Known behaviour worth being aware of
+#
+# spaCy tags bare digit runs as DATE at 0.85 in both languages, so a phone
+# number or a BSN also comes back as DATE_TIME on the same span. The analyzer
+# returns both, since it only deduplicates results that share an entity type.
+# Dropping DATE from the mapping above would clear the noise but would also give
+# up date detection entirely, so the overlap is left in place deliberately.
+# ------------------------------------------------------------------

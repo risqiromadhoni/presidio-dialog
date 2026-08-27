@@ -1,5 +1,18 @@
+# spaCy engine configuration, standalone form.
+#
+# UNUSED at runtime. Both compose files set ANALYZER_CONF_FILE, and a unified
+# config that carries its own `nlp_configuration` block takes precedence over
+# NLP_CONF_FILE. Editing this file changes nothing until that variable is
+# removed. The live copy of this block is in configs/analyzer.yaml.
+#
+# It is kept as the fallback for running the analyzer with NLP_CONF_FILE alone,
+# and is a copy of the `nlp_configuration` block in analyzer.yaml. If you change
+# one, change both, or delete this file.
+
 nlp_engine_name: spacy
 
+# Baked into the image by the Dockerfile. The `lg` variants are used rather than
+# `sm` because the small Dutch model misses a noticeable share of person names.
 models:
   - lang_code: en
     model_name: en_core_web_lg
@@ -7,6 +20,9 @@ models:
     model_name: nl_core_news_lg
 
 ner_model_configuration:
+  # spaCy NER label -> Presidio entity. Both models emit the OntoNotes label
+  # set, so PER, LOCATION and ORGANIZATION never fire today. They are kept
+  # because transformer and stanza models use them.
   model_to_presidio_entity_mapping:
     PER: PERSON
     PERSON: PERSON
@@ -19,6 +35,9 @@ ner_model_configuration:
     ORGANIZATION: ORGANIZATION
     DATE: DATE_TIME
     TIME: DATE_TIME
+
+  # spaCy labels its organizations loosely, so ORG matches are multiplied down
+  # to 0.34 and fall under the 0.6 threshold unless something corroborates them.
   low_confidence_score_multiplier: 0.4
   low_score_entity_names:
     - ORG

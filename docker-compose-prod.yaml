@@ -1,25 +1,151 @@
+# Production stack (Dokploy).
+#
+# No host ports are published: every service sits on the shared external
+# `dokploy-network` and is reached through the nginx gateway, which Dokploy's
+# Traefik routes the *.getdialog.dev domains to.
+#
+# Local development lives in docker-compose.yaml.
+name: presidio-prod
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+x-app-healthcheck: &app-healthcheck
+  test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/health"]
+  interval: 15s
+  timeout: 5s
+  retries: 10
+
 services:
+
+  # ============================================================
+  # Presidio Analyzer
+  #
+  # Built from Dockerfile so both spaCy models (en_core_web_lg and
+  # nl_core_news_lg) and configs/analyzer.yaml are baked into the image.
+  # ============================================================
   presidio-analyzer:
     build:
       context: .
       dockerfile: Dockerfile
     image: local/presidio-analyzer:2.2.364-en-nl
-    ports:
-      - "5001:3000"
-    volumes:
-      - ./configs/analyzer.yaml:/app/analyzer.yaml
-      - ./configs/nlp_engine.yaml:/app/nlp_engine.yaml
-      - ./configs/recognizer_registry.yaml:/app/recognizer_registry.yaml
+
+    expose:
+      - "3000"
+
+    networks:
+      - dokploy-network
+
     environment:
       PORT: 3000
-      WORKERS: 1
+      # gunicorn does not --preload, so each worker loads its own copy of both
+      # lg models (~1.5 GB RSS each). Budget ~4 GB; drop to 1 on a small node.
+      WORKERS: 2
+      # Unified config: nlp_configuration + recognizer_registry live in this
+      # one file and take precedence over NLP_CONF_FILE / REGISTRY_CONF_FILE.
       ANALYZER_CONF_FILE: /app/analyzer.yaml
-      NLP_CONF_FILE: /app/nlp_engine.yaml
-      RECOGNIZER_REGISTRY_CONF_FILE: /app/recognizer_registry.yaml
-    restart: unless-stopped
 
-  presidio-anonymizer:
-    image: ghcr.io/data-privacy-stack/presidio-anonymizer:2.2.364
-    ports:
-      - "5002:3000"
+    healthcheck:
+      <<: *app-healthcheck
+      # Loading both lg models takes a while on a cold start.
+      start_period: 180s
+
     restart: unless-stopped
+    logging: *logging
+
+
+  # ============================================================
+  # Presidio Anonymizer
+  # ============================================================
+  presidio-anonymizer:
+    image: ghcr.io/data-privacy-stack/presidio-anonymizer:2.2.364@sha256:e567013893ebc80994e3799f6f55c86aa1f0b0fadb779571ab346f0ec45365c1
+
+    expose:
+      - "3000"
+
+    networks:
+      - dokploy-network
+
+    environment:
+      PORT: 3000
+      WORKERS: 2
+
+    healthcheck:
+      <<: *app-healthcheck
+      start_period: 60s
+
+    restart: unless-stopped
+    logging: *logging
+
+
+  # ============================================================
+  # Presidio Image Redactor
+  #
+  # OCR + Presidio Analyzer + Image Redaction.
+  # Pinned by digest: this repository only publishes a :latest tag.
+  # ============================================================
+  presidio-image-redactor:
+    image: ghcr.io/data-privacy-stack/presidio-image-redactor:latest@sha256:1a54ed9e9fb49131afd174203e6c0f023e3214f53798198bace799121adc2a24
+
+    expose:
+      - "3000"
+
+    networks:
+      - dokploy-network
+
+    environment:
+      PORT: 3000
+      WORKERS: 2
+
+    healthcheck:
+      <<: *app-healthcheck
+      start_period: 120s
+
+    restart: unless-stopped
+    logging: *logging
+
+
+  # ============================================================
+  # Nginx Gateway
+  # ============================================================
+  presidio-proxy:
+    image: nginx:alpine
+
+    expose:
+      - "8080"
+
+    networks:
+      - dokploy-network
+
+    volumes:
+      - ./nginx/presidio.conf:/etc/nginx/conf.d/default.conf:ro
+
+    # Ordering only. The gateway resolves backends per request via Docker DNS
+    # (see nginx/presidio.conf), so it starts immediately and serves 502 until
+    # the analyzer has finished loading its models.
+    depends_on:
+      - presidio-analyzer
+      - presidio-anonymizer
+      - presidio-image-redactor
+
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+    restart: unless-stopped
+    logging: *logging
+
+
+# ==============================================================
+# Shared Dokploy Network
+# ==============================================================
+
+networks:
+  dokploy-network:
+    external: true
